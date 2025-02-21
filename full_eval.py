@@ -12,7 +12,7 @@ from tabulate import tabulate
 from tensorboardX import SummaryWriter
 
 os.environ["OMP_NUM_THREADS"] = "1"
-
+os.environ['CUDA_VISIBLE_DEVICES']="0,1,2,3,4,5,6,7,8,9"
 
 def full_eval(args=None):
     if args is None:
@@ -24,10 +24,8 @@ def full_eval(args=None):
     args.phase = 'eval'
     args.episode_type = 'TestValEpisode'
     args.test_or_val = 'val'
-
-    # if args.num_category != 60:
-    #     args.detection_feature_file_name = 'det_feature_{}_categories.hdf5'.format(args.num_category)
-
+    file_name=args.model+'_'+str(args.large_K)+'_'+'_'+str(args.dij_K)+'_'+str(args.detect_thresh)
+    args.results_json=file_name+'.json'
     start_time = time.time()
     local_start_time_str = time.strftime(
         '%Y_%m_%d_%H_%M_%S', time.localtime(start_time)
@@ -44,18 +42,21 @@ def full_eval(args=None):
         if len(s) >= 4 and f.startswith(args.title) and int(s[-7]) >= args.test_start_from
     ]
     checkpoints.sort(key=lambda x: x[1])
-
+    
     best_model_on_val = None
     best_performance_on_val = 0.0
     for (f, train_ep) in tqdm(checkpoints, desc="Checkpoints."):
+        # break
 
         model = os.path.join(args.save_model_dir, f)
+        print(model)
+          
         args.load_model = model
-
-        # run eval on model
-        # args.test_or_val = "val"
-        args.test_or_val = "test"
-        main_eval(args, create_shared_model, init_agent)
+        args.present_model =f
+        args.test_or_val = "val"
+        
+  
+        main_eval(args, create_shared_model, init_agent,last=False)
 
         # check if best on val.
         with open(args.results_json, "r") as f:
@@ -67,19 +68,11 @@ def full_eval(args=None):
 
         log_writer.add_scalar("val/success", results["success"], train_ep)
         log_writer.add_scalar("val/spl", results["spl"], train_ep)
-
-        if args.include_test:
-            args.test_or_val = "test"
-            main_eval(args, create_shared_model, init_agent)
-            with open(args.results_json, "r") as f:
-                results = json.load(f)
-
-            log_writer.add_scalar("test/success", results["success"], train_ep)
-            log_writer.add_scalar("test/spl", results["spl"], train_ep)
-
+    
     args.test_or_val = "test"
     args.load_model = best_model_on_val
-    main_eval(args, create_shared_model, init_agent)
+   
+    main_eval(args, create_shared_model, init_agent,last=True)
 
     with open(args.results_json, "r") as f:
         results = json.load(f)

@@ -18,7 +18,7 @@ from utils.model_util import ScalarMeanTracker
 from runners import a3c_val
 
 
-def main_eval(args, create_shared_model, init_agent):
+def main_eval(args, create_shared_model, init_agent,last):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -30,16 +30,14 @@ def main_eval(args, create_shared_model, init_agent):
     else:
         torch.cuda.manual_seed(args.seed)
         try:
-            mp.set_start_method("spawn")
+            mp.set_start_method("spawn",force=True)
         except RuntimeError:
             pass
-
     model_to_open = args.load_model
 
     processes = []
 
     res_queue = mp.Queue()
-    args.learned_loss = False
     args.num_steps = 50
     target = a3c_val
 
@@ -90,13 +88,19 @@ def main_eval(args, create_shared_model, init_agent):
         for p in processes:
             time.sleep(0.1)
             p.join()
-
+    
     with open(args.results_json, "w") as fp:
+        tracked_means['large_K']=args.large_K
+        tracked_means['dij_K']=args.dij_K
+        tracked_means['detect_thresh']=args.detect_thresh
+        tracked_means['l_up']=args.l_up
+        tracked_means['l_down']=args.l_down
         json.dump(tracked_means, fp, sort_keys=True, indent=4)
+ 
+    if last:
+        visualization_dir = './visualization_files'
+        if not os.path.exists(visualization_dir):
+            os.mkdir(visualization_dir)
 
-    visualization_dir = './visualization_files'
-    if not os.path.exists(visualization_dir):
-        os.mkdir(visualization_dir)
-
-    with open(os.path.join(visualization_dir, args.visualize_file_name), 'w') as wf:
-        json.dump(visualizations, wf)
+        with open(os.path.join(visualization_dir, args.visualize_file_name), 'w') as wf:
+            json.dump(visualizations, wf)

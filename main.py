@@ -15,7 +15,7 @@ from utils import command_parser
 
 from utils.class_finder import model_class, agent_class, optimizer_class
 from utils.model_util import ScalarMeanTracker
-from utils.data_utils import check_data, loading_scene_list
+from utils.data_utils import  loading_scene_list
 from main_eval import main_eval
 from full_eval import full_eval
 
@@ -23,24 +23,27 @@ from runners import a3c_train, a3c_val
 
 
 os.environ["OMP_NUM_THREADS"] = "1"
+os.environ['CUDA_VISIBLE_DEVICES']="0,1,2,3,4,5,6,7,8,9"
 
-
+# import DMAE_COMP_FRONT(torch.nn.Module):
+#     def __init__(self):
+#         super(DMAE_COMP_FRONT, self).__init__()
+    
 def main():
     setproctitle.setproctitle("Train/Test Manager")
     args = command_parser.parse_arguments()
-
+    if args.gpu_ids == -1:
+        args.gpu_ids = [-1]
+    else:
+        torch.cuda.manual_seed(args.seed)
+        mp.set_start_method("spawn")
     print('Training started from: {}'.format(
         time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
     )
 
-    args.learned_loss = False
     args.num_steps = 50
-    target = a3c_val if args.eval else a3c_train
+    target = a3c_train#a3c_val if args.eval else a3c_train
 
-    if args.csiro:
-        args.data_dir = './data/'
-    else:
-        check_data(args)
     scenes = loading_scene_list(args)
 
     create_shared_model = model_class(args.model)
@@ -51,10 +54,6 @@ def main():
     torch.manual_seed(args.seed)
     random.seed(args.seed)
 
-    if args.eval:
-        main_eval(args, create_shared_model, init_agent)
-        return
-
     start_time = time.time()
     local_start_time_str = time.strftime(
         '%Y_%m_%d_%H_%M_%S', time.localtime(start_time)
@@ -63,56 +62,50 @@ def main():
     tb_log_dir = args.log_dir + '/' + args.title + '_' + args.phase + '_' + local_start_time_str
     log_writer = SummaryWriter(log_dir=tb_log_dir)
 
-    if args.gpu_ids == -1:
-        args.gpu_ids = [-1]
-    else:
-        torch.cuda.manual_seed(args.seed)
-        mp.set_start_method("spawn")
-
     shared_model = create_shared_model(args)
 
     train_total_ep = 0
     n_frames = 0
-
+    if args.pretrained_trans is not None:                                          
+        saved_state = torch.load(
+            args.pretrained_trans, map_location=lambda storage, loc: storage
+        )
+        model_dict = shared_model.state_dict()
+        pretrained_dict = {k: v for k, v in saved_state['model'].items() if             
+                           (k in model_dict and v.shape == model_dict[k].shape)}  
+        model_dict.update(pretrained_dict)                                       
+        shared_model.load_state_dict(model_dict)         
     if args.continue_training is not None:
+        orgin_state = shared_model.state_dict()
         saved_state = torch.load(
             args.continue_training, map_location=lambda storage, loc: storage
         )
-        shared_model.load_state_dict(saved_state)
-
+        orgin_state.update(saved_state)
+        shared_model.load_state_dict(orgin_state)
         train_total_ep = int(args.continue_training.split('_')[-7])
         n_frames = int(args.continue_training.split('_')[-8])
 
-    if args.fine_tuning is not None:
-        saved_state = torch.load(
-            args.fine_tuning, map_location=lambda storage, loc: storage
-        )
-        model_dict = shared_model.state_dict()
-        pretrained_dict = {k: v for k, v in saved_state.items() if (k in model_dict and v.shape == model_dict[k].shape)}
-        model_dict.update(pretrained_dict)
-        shared_model.load_state_dict(model_dict)
-
-    if args.update_meta_network:
-        for layer, parameters in shared_model.named_parameters():
-            if not layer.startswith('meta'):
-                parameters.requires_grad = False
 
     shared_model.share_memory()
-    if args.fine_tune_graph:
-        optimizer = optimizer_type(
-            [
-                {'params': [v for k, v in shared_model.named_parameters() if v.requires_grad and not k.startswith('graph')],
-                 'lr': 0.00001},
-                {'params': [v for k, v in shared_model.named_parameters() if v.requires_grad and k.startswith('graph')],
-                 'lr': args.lr},
-            ]
-        )
-    else:
-        optimizer = optimizer_type(
-            [v for k, v in shared_model.named_parameters() if v.requires_grad], lr=args.lr
-        )
+
+     
+    # optimizer = optimizer_type(
+    #     [v for k, v in shared_model.named_parameters() if v.requires_grad], lr=args.lr
+    # )
+    optimizer = optimizer_type(
+        [
+            {'params': [v for k, v in shared_model.named_parameters() if
+                        v.requires_grad and ('pointwise_compress' in k)],
+                'lr': args.low_lr},                                          
+            {'params': [v for k, v in shared_model.named_parameters() if
+                        v.requires_grad and ('pointwise_compress' not in k)],
+                'lr': args.lr},
+        ]
+    )
     optimizer.share_memory()
     print(shared_model)
+    print(args)
+
 
     processes = []
 
@@ -142,7 +135,7 @@ def main():
 
     train_thin = args.train_thin
     train_scalars = ScalarMeanTracker()
-
+    st_time=time.time()
     try:
         while train_total_ep < args.max_ep:
 
@@ -161,7 +154,6 @@ def main():
 
             if (train_total_ep % args.ep_save_freq) == 0:
 
-                print('{}: {}'.format(train_total_ep, n_frames))
                 if not os.path.exists(args.save_model_dir):
                     os.makedirs(args.save_model_dir)
                 state_to_save = shared_model.state_dict()
@@ -174,10 +166,12 @@ def main():
                 torch.save(state_to_save, save_path)
 
     finally:
+        ed_time=time.time()
+        print(args.max_ep,"个episode，总耗时",ed_time-st_time)
         log_writer.close()
         end_flag.value = True
         for p in processes:
-            time.sleep(0.1)
+            time.sleep(0.2)
             p.join()
 
     if args.test_after_train:
